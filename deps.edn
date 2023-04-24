@@ -1,0 +1,11 @@
+{:paths ["src" "resources"]
+ :deps {org.clojure/clojure {:mvn/version "1.11.1"}
+        com.solace/solace-messaging-client {:mvn/version "1.2.0"}
+        funcool/promesa {:mvn/version "10.0.594"}}
+ :aliases {:build {:deps {io.github.clojure/tools.build {:mvn/version "0.9.3"}}
+                   :ns-default build}
+           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
+                    :exec-fn deps-deploy.deps-deploy/deploy
+                    :exec-args {:installer :remote
+                                :sign-releases? true
+                                :artifact "target/clojosolace-0.0.1.jar"}}}}
