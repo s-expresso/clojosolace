@@ -65,69 +65,138 @@
   (.terminate (:requestor conn) 3000) ; grace period of 3000ms
   (.disconnect (:msg-svc conn)))
 
-(defn request
-  "Use ^Connection `conn` to send a request to `topic` with `payload`. Return a promesa promise
-   that will resolve to ^InboundMsg transformed by `preprocess` (default: identity) function, or
-   rejected as {:user-context ^Object, :error ^PubSubPlusClientException} if exception occurred."
-  [^Connection conn & {:keys [topic payload
-                              timeout_ms      preprocess]
-                       :or   {timeout_ms 3000 preprocess identity}}]
+; ----------------------------------------------------------------------------------------------------------------------
+(defn request-callback
+  "Use ^Connection `conn` to send a request to `topic` with `payload`. Invokes `callback` with 3 arity (^InboundMsg message,
+   ^Object userContext, ^PubSubPlusClientException exception)."
+  [^Connection conn callback & {:keys [topic payload
+                                       timeout_ms]
+                                :or   {timeout_ms 3000}}]
   (let [msg-builder (.messageBuilder (:msg-svc conn))
         msg (-> msg-builder (.build payload))
-        promise (p/deferred)
-        callback (reify RequestReplyMessagePublisher$ReplyMessageHandler
-                   (^void onMessage [this ^InboundMessage message ^Object userContext ^PubSubPlusClientException exception]
-                     (if (nil? exception)
-                       (p/resolve! promise (preprocess message))
-                       (p/reject! promise (ex-info "request-err" {:user-context userContext :error exception})))))]
-    (.publish (:requestor conn) msg callback (Topic/of topic) timeout_ms)
+        cb (reify RequestReplyMessagePublisher$ReplyMessageHandler
+             (^void onMessage [this ^InboundMessage message ^Object userContext ^PubSubPlusClientException exception]
+               (callback message userContext exception)))]
+    (.publish (:requestor conn) msg cb (Topic/of topic) timeout_ms)))
+
+(defn- promesa-promise-factory
+  "Return [promise callback] where callback will put ^InboundMessage into promise when response data arrives."
+  [_]
+  (let [promise (p/deferred)
+        callback (fn [^InboundMessage message ^Object userContext ^PubSubPlusClientException exception]
+                   (if (nil? exception)
+                     (p/resolve! promise message)
+                     (p/reject! promise (ex-info "request-err" {:user-context userContext :error exception}))))]
+    [promise callback]))
+
+(defn request
+  "Use ^Connection `conn` to send a request to `topic` with `payload` with `timeout_ms`.
+   
+   Named variable `promise-factory` expects a function (fn [options] ...) that returns a promise and fn pair, where fn has 3
+   arity (^InboundMsg message, ^Object userContext, ^PubSubPlusClientException exception) and must update the promise when
+   invoked. The same promise is returned immediately by this function. Mapped to `promesa-promise-factory` by default.
+
+   Named variables are collected into `options`, which is then passed into `promise-factory` function."
+  [^Connection conn & {:keys [topic payload
+                              timeout_ms      promise-factory]
+                       :or   {timeout_ms 3000 promise-factory promesa-promise-factory}
+                       :as   options}]
+  (let [[promise callback] (promise-factory options)]
+    (request-callback conn callback :topic topic :payload payload :timeout_ms timeout_ms)
     promise))
 
-(defn listen-requests
-  "Use ^Connection `conn` to listen to requests sent to `topic` and returns a promesa channel.
-   Item in channel will resolve to:
-       {:message ^InboundMessage transformed by `preprocess` (default: identity) function,
-        :reply   (fn [payload] ...) for sending payload as reply to requestor}.
-   `buffer` (default: 128) is used to construct returned channel (see promesa.exe.csp/chan for
-   more info)."
-  [^Connection conn & {:keys [topic preprocess          buffer]
-                       :or         {preprocess identity buffer 128}}]
+; ----------------------------------------------------------------------------------------------------------------------
+
+(defn listen-callback
+  "Use ^Connection `conn` to listen to requests sent to `topic`.  Invokes `callback` with 2 arity (^InboundMessage
+   message ^RequestReplyMessageReceiver$Replier replier). Returns a receiver object for (.terminate receiver) when done."
+  [^Connection conn callback & {:keys [topic]}]
   (let [receiver (-> (:msg-svc conn)
                      .requestReply
                      .createRequestReplyMessageReceiverBuilder
                      (.build (TopicSubscription/of topic))
                      .start)
-        chan (csp/chan buffer)
+        cb (reify RequestReplyMessageReceiver$RequestMessageHandler
+             (^void onMessage [this ^InboundMessage message ^RequestReplyMessageReceiver$Replier replier]
+               (callback message replier)))]
+    (.receiveAsync receiver cb)
+    receiver))
+
+(defn- promesa-listen-chan-factory
+  "Return [promise callback] where callback will put {:message (xf ^InboundMessage), :reply (fn ...)} into promise
+   when data arrives."
+  [conn options]
+  (let [{:keys [buffer     xf]
+         :or   {buffer 128}} options
         ->msg #(-> (:msg-svc conn)
                    .messageBuilder
                    (.build %))
-        callback (reify RequestReplyMessageReceiver$RequestMessageHandler
-                   (^void onMessage [this ^InboundMessage message ^RequestReplyMessageReceiver$Replier replier]
-                     (csp/put chan {:message (preprocess message)
-                                    :reply #(.reply replier (->msg %))})))]
-    (.receiveAsync receiver callback)
-    chan))
+        chan (csp/chan buffer xf)
+        callback (fn [^InboundMessage message ^RequestReplyMessageReceiver$Replier replier]
+                   (csp/put chan {:message message
+                                  :reply #(.reply replier (->msg %))}))]
+    [chan callback]))
 
-(defn publish
-  "Use ^Connection `conn` to publish a message with `payload` to `topic`."
-  [^Connection conn & {:keys [topic payload]}]
-  (.publish (:publisher conn) payload (Topic/of topic)))
+(defn listen
+  "Use ^Connection `conn` to listen to requests sent to `topic` and returns {:chan channel, :receiver receiver}.
+   Client shall use `channel` to receive data and call (.close receiver) when done.
+     
+  Named variable `reqresp-factory` expects a function (fn [options] ...) that returns [channel
+   (fn [^InboundMessage message ^RequestReplyMessageReceiver$Replier replier] ...)]. Mapped to `promesa-listen-chan-factory`
+   by default.
+  
+  Named variables are collected into `options`, which is then passed into `reqresp-factory` function."
+  [^Connection conn & {:keys [topic reqresp-factory]
+                       :or         {reqresp-factory promesa-listen-chan-factory}
+                       :as options}]
+  (let [[chan callback] (reqresp-factory conn options)
+        receiver (listen-callback conn callback :topic topic)]
+    {:chan chan :receiver receiver}))
 
-(defn subscribe
-  "Use ^Connection `conn` to subscribe to `topic` and returns a promesa channel. Item in channel
-   will resolve to ^InboundMessage transformed by `preprocess` (default: identity)  function.
-   `buffer` (default: 128) is used to construct returned channel (see promesa.exe.csp/chan for more
-   info)."
-  [conn & {:keys [topic preprocess          buffer]
-           :or         {preprocess identity buffer 128}}]
+; ----------------------------------------------------------------------------------------------------------------------
+
+(defn subscribe-callback
+  "Use ^Connection `conn` to subscribe to `topic` and receives data via `callback`, where `callback`
+   signature is (fn [^InboundMessage msg] ...)"
+  [conn callback & {:keys [topic]}]
   (let [receiver (-> (:msg-svc conn)
                      .createDirectMessageReceiverBuilder
                      (.withSubscriptions (into-array [(TopicSubscription/of topic)]))
                      (.build)
                      .start)
-        chan (csp/chan buffer)
-        callback (reify MessageReceiver$MessageHandler
-                   (^void onMessage [this ^InboundMessage message]
-                     (csp/put chan (preprocess message))))]
-    (.receiveAsync receiver callback)
-    chan))
+        cb (reify MessageReceiver$MessageHandler
+             (^void onMessage [this ^InboundMessage message]
+               (callback message)))]
+    (.receiveAsync receiver cb)
+    receiver))
+
+(defn- promesa-subscribe-chan-factory
+  "Return [promise callback] where callback will put (xf ^InboundMessage) into promise when data arrives."
+  [options]
+  (let [{:keys [buffer     xf]
+         :or   {buffer 128}} options
+        chan (csp/chan buffer xf)
+        callback (fn [message] (csp/put chan message))]
+    [chan callback]))
+
+(defn subscribe
+  "Use ^Connection `conn` to subscribe to named variable `topic` and returns {:chan channel, :receiver receiver}.
+   Client shall use `channel` to receive data and call (.terminate receiver) when done.
+   
+   Named variable `chan-factory` expects a function (fn [options] ...) that returns [channel
+   (fn [^InboundMessage m] ...)]. Mapped to `promesa-subscribe-chan-factory` by default.
+
+   Named variables are collected into `options`, which is then passed into `chan-factory` function."
+  [conn & {:keys [topic chan-factory]
+           :or         {chan-factory promesa-subscribe-chan-factory}
+           :as options}]
+  (let [[chan callback] (chan-factory options)
+        receiver (subscribe-callback conn callback :topic topic)]
+    {:chan chan :receiver receiver}))
+
+; ----------------------------------------------------------------------------------------------------------------------
+
+(defn publish
+  "Use ^Connection `conn` to publish a message with `payload` to `topic`."
+  [^Connection conn & {:keys [topic payload]}]
+  (.publish (:publisher conn) payload (Topic/of topic)))"
