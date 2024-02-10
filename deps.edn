@@ -2,10 +2,16 @@
  :deps {org.clojure/clojure {:mvn/version "1.11.1"}
         com.solace/solace-messaging-client {:mvn/version "1.2.0"}
         funcool/promesa {:mvn/version "10.0.594"}}
- :aliases {:build {:deps {io.github.clojure/tools.build {:mvn/version "0.9.3"}}
+ :aliases {; update build.clj first
+           ; clj -T:build jar
+           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.9.3"}}
                    :ns-default build}
+
+           ; update pom.xml and :artifact below first
+           ; ensure CLOJARS_USERNAME and CLOJARS_PASSWORD env vars are set
+           ; clj -T:deploy
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
                     :exec-fn deps-deploy.deps-deploy/deploy
                     :exec-args {:installer :remote
                                 :sign-releases? false
-                                :artifact "target/clojosolace-0.0.1.jar"}}}}
+                                :artifact "target/clojosolace-0.0.2.jar"}}}}

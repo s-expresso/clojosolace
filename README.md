@@ -1,6 +1,12 @@
 # ClojoSolace
 ClojoSolace is a lightweight Clojure wrapper around Solace Java messaging API
 
+## Usage
+Add the following to deps.edn (or its equivalent for lein).
+```edn
+{:deps {com.github.s-expresso/clojosolace {:mvn/version "0.0.2"}}}
+```
+
 ## Main API Functions
 ```clojure
 (defn connect
