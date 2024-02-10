@@ -3,12 +3,6 @@
             [promesa.core :as p]
             [promesa.exec.csp :as csp]))
 
-(defn ->msg [msg]
-  (let [msg (:message msg)
-        topic (.getDestinationName msg)
-        content (.getPayloadAsString msg)]
-    {:topic topic :payload content}))
-
 ; to run these examples, change config below to connect to your solace event broker
 (def svc (core/connect {:host "host[:port]" :vpn "vpn" :user "user" :password "password"}))
 
@@ -26,10 +20,16 @@
            (csp/take 1000) ; timeout 1000ms
            (p/catch Exception #(str "Subscription exception: " %))))
 
-(println "Received: " (->msg @p))
+(println "\nReceived:" @p)
+
+(defn ->msg [msg]
+  (let [msg (:message msg)
+        topic (.getDestinationName msg)
+        content (.getPayloadAsString msg)]
+    {:topic topic :payload content}))
+
+(println "\nExtracted:" (->msg @p))
 
 ; clean up
 (core/unsubscribe svc sub-chan)
 (core/disconnect svc)
-
-

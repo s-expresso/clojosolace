@@ -68,11 +68,11 @@ is expected to put `reply-msg` into `promise`. Mapped to `promesa-promise-factor
 
 Named variables are collected into `options` which is then passed into `promise-factory` function, typically used for
 preprocessing `reply-msg` before it is put into promise."
-  [^Service svc & {:keys [topic payload
-                          timeout_ms      promise-factory]
-                   :or   {timeout_ms 3000 promise-factory promesa-promise-factory}
-                   :as   options}]
-  (let [[promise callback] (promise-factory options)]
+  [^Service svc message-info & {:keys [timeout_ms      promise-factory]
+                                :or   {timeout_ms 3000 promise-factory promesa-promise-factory}
+                                :as   options}]
+  (let [{topic :topic, payload :payload} message-info
+        [promise callback] (promise-factory options)]
     (base/request (:connection svc) callback :topic topic :payload payload :timeout_ms timeout_ms)
     promise))
 
