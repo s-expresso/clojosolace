@@ -1,31 +1,35 @@
 (ns clojosolace.example.pubsub
-  (:require [clojosolace.messaging :as sol]
+  (:require [clojosolace.core :as core]
             [promesa.core :as p]
             [promesa.exec.csp :as csp]))
 
-; to run these examples, change config below to connect to your solace event broker
-(def conn (core/connect {:host "host[:port]" :vpn "vpn" :user "user" :password "password"}))
+(defn ->msg [msg]
+  (let [msg (:message msg)
+        topic (.getDestinationName msg)
+        content (.getPayloadAsString msg)]
+    {:topic topic :payload content}))
 
-; subscribe to a topic and apply `xf` to message payload before it is put into returned channel
-(def sub (sol/subscribe conn
-                        :topic "a/b/c"
-                        :xf (map #(->> % (sol/payload->str)))))
+; to run these examples, change config below to connect to your solace event broker
+(def svc (core/connect {:host "host[:port]" :vpn "vpn" :user "user" :password "password"}))
+
+; subscribe to a topic and apply ->msg to payload in {:message payload, ...} before it is put into returned channel
+(def sub-chan (core/subscribe svc :topic "a/b/c"))
 ; => {:chan ..., :receiver ...}
 
 ; publish a message
-(def payload "qwerty")
-(sol/publish conn :topic "a/b/c" :payload payload)
-(println "Published:" payload)
+(def msg-data {:topic "a/b/c" :payload "hello"})
+(core/publish svc msg-data)
+(println "Published:" msg-data)
 
 ; read from subscription channel
-(def p (-> (sub :chan)
+(def p (-> sub-chan
            (csp/take 1000) ; timeout 1000ms
            (p/catch Exception #(str "Subscription exception: " %))))
 
-(println "Subscription received: " @p)
+(println "Received: " (->msg @p))
 
 ; clean up
-(.terminate (sub :receiver) 1000)
-(sol/disconnect conn)
+(core/unsubscribe svc sub-chan)
+(core/disconnect svc)
 
 
